@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 
-const MAX_LOG_ENTRIES = 700
+const MAX_LOG_ENTRIES = 900
+const STORAGE_LAUNCH_CONFIG = 'esa-launcher.launch-config.v1'
+const STORAGE_PROFILES = 'esa-launcher.mode-profiles.v1'
 
 const DEFAULT_LAUNCH_CONFIG = {
   'primary-flight-display': {
@@ -23,10 +25,146 @@ const DEFAULT_LAUNCH_CONFIG = {
   },
 }
 
+const BUILTIN_PROFILES = [
+  {
+    id: 'preset-xplane-demo',
+    name: 'Preset X-Plane Demo',
+    config: {
+      'primary-flight-display': {
+        mode: '2',
+        xplaneIp: '127.0.0.1',
+        xplanePort: '49000',
+      },
+      'navigation-display': {
+        mode: '2',
+        layout: '1',
+        xplaneIp: '127.0.0.1',
+        xplanePort: '49000',
+        localPort: '49005',
+      },
+    },
+    readonly: true,
+  },
+  {
+    id: 'preset-msp-bench',
+    name: 'Preset MSP Bench',
+    config: {
+      'primary-flight-display': {
+        mode: '3',
+        mspPort: '/dev/tty.usbserial',
+        mspBaud: '115200',
+      },
+      'navigation-display': {
+        mode: '3',
+        layout: '2',
+        mspPort: '/dev/tty.usbserial',
+        mspBaud: '115200',
+      },
+    },
+    readonly: true,
+  },
+  {
+    id: 'preset-joystick-check',
+    name: 'Preset Joystick Check',
+    config: {
+      'primary-flight-display': {
+        mode: '1',
+        joystickName: 'X52',
+      },
+      'navigation-display': {
+        mode: '1',
+        layout: '2',
+      },
+    },
+    readonly: true,
+  },
+]
+
+const STATUS_META = {
+  stopped: { label: 'Stopped', tone: 'stopped' },
+  ready: { label: 'Ready', tone: 'ready' },
+  checking: { label: 'Pre-check', tone: 'checking' },
+  launching: { label: 'Launching', tone: 'launching' },
+  active: { label: 'Active', tone: 'active' },
+  stopping: { label: 'Stopping', tone: 'stopping' },
+  timeout: { label: 'Timeout', tone: 'timeout' },
+  error: { label: 'Error', tone: 'error' },
+  'deps-missing': { label: 'Missing deps', tone: 'error' },
+}
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value))
+}
+
 function createDefaultLaunchConfig() {
-  return {
-    'primary-flight-display': { ...DEFAULT_LAUNCH_CONFIG['primary-flight-display'] },
-    'navigation-display': { ...DEFAULT_LAUNCH_CONFIG['navigation-display'] },
+  return clone(DEFAULT_LAUNCH_CONFIG)
+}
+
+function mergeWithDefaults(candidate) {
+  const base = createDefaultLaunchConfig()
+
+  if (!candidate || typeof candidate !== 'object') {
+    return base
+  }
+
+  for (const projectId of Object.keys(base)) {
+    if (candidate[projectId] && typeof candidate[projectId] === 'object') {
+      base[projectId] = {
+        ...base[projectId],
+        ...candidate[projectId],
+      }
+    }
+  }
+
+  return base
+}
+
+function loadLaunchConfigFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_LAUNCH_CONFIG)
+
+    if (!raw) {
+      return createDefaultLaunchConfig()
+    }
+
+    return mergeWithDefaults(JSON.parse(raw))
+  } catch {
+    return createDefaultLaunchConfig()
+  }
+}
+
+function loadProfilesFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_PROFILES)
+
+    if (!raw) {
+      return []
+    }
+
+    const parsed = JSON.parse(raw)
+
+    if (!Array.isArray(parsed)) {
+      return []
+    }
+
+    return parsed
+      .filter((profile) => {
+        return (
+          profile &&
+          typeof profile.id === 'string' &&
+          typeof profile.name === 'string' &&
+          profile.config &&
+          typeof profile.config === 'object'
+        )
+      })
+      .map((profile) => ({
+        id: profile.id,
+        name: profile.name,
+        config: mergeWithDefaults(profile.config),
+        readonly: false,
+      }))
+  } catch {
+    return []
   }
 }
 
@@ -40,7 +178,7 @@ function trimLogs(entries) {
 
 function toStatusMap(statuses = []) {
   return statuses.reduce((result, status) => {
-    result[status.id] = Boolean(status.running)
+    result[status.id] = status
     return result
   }, {})
 }
@@ -65,21 +203,90 @@ function formatTime(timestamp) {
   return new Date(timestamp).toLocaleTimeString('fr-FR', { hour12: false })
 }
 
+function getStatusMeta(state) {
+  return STATUS_META[state] || { label: state || 'Unknown', tone: 'stopped' }
+}
+
+function isProjectRunning(status) {
+  if (!status) {
+    return false
+  }
+
+  if (status.running) {
+    return true
+  }
+
+  return ['launching', 'active', 'stopping'].includes(status.state)
+}
+
+function summarizeSingleProjectDiagnostics(report) {
+  const summary = report?.summary || { pass: 0, warn: 0, fail: 0 }
+
+  return {
+    generatedAt: new Date().toISOString(),
+    reports: [report],
+    summary: {
+      projectPass: report?.status === 'pass' ? 1 : 0,
+      projectWarn: report?.status === 'warn' ? 1 : 0,
+      projectFail: report?.status === 'fail' ? 1 : 0,
+      checksPass: summary.pass || 0,
+      checksWarn: summary.warn || 0,
+      checksFail: summary.fail || 0,
+    },
+  }
+}
+
 function App() {
   const [baseDir, setBaseDir] = useState('')
   const [projects, setProjects] = useState([])
-  const [statuses, setStatuses] = useState({})
+  const [scenarios, setScenarios] = useState([])
+  const [statusById, setStatusById] = useState({})
   const [logs, setLogs] = useState([])
   const [globalBusy, setGlobalBusy] = useState('')
   const [projectBusy, setProjectBusy] = useState({})
+  const [scenarioBusy, setScenarioBusy] = useState(false)
+  const [logExportBusy, setLogExportBusy] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [showModePage, setShowModePage] = useState(true)
-  const [launchConfig, setLaunchConfig] = useState(() => createDefaultLaunchConfig())
+  const [launchConfig, setLaunchConfig] = useState(() => loadLaunchConfigFromStorage())
+  const [savedProfiles, setSavedProfiles] = useState(() => loadProfilesFromStorage())
+  const [selectedProfileId, setSelectedProfileId] = useState(BUILTIN_PROFILES[0].id)
+  const [newProfileName, setNewProfileName] = useState('')
+  const [selectedScenarioId, setSelectedScenarioId] = useState('')
+  const [diagnostics, setDiagnostics] = useState(null)
+  const [autotest, setAutotest] = useState(null)
+  const [logQuery, setLogQuery] = useState('')
+  const [logLevelFilter, setLogLevelFilter] = useState('all')
+  const [logSourceFilter, setLogSourceFilter] = useState('all')
 
   const projectNames = useMemo(
     () => Object.fromEntries(projects.map((project) => [project.id, project.name])),
     [projects],
   )
+
+  const allProfiles = useMemo(() => [...BUILTIN_PROFILES, ...savedProfiles], [savedProfiles])
+
+  const selectedScenario = useMemo(
+    () => scenarios.find((scenario) => scenario.id === selectedScenarioId) || null,
+    [scenarios, selectedScenarioId],
+  )
+
+  const logSources = useMemo(() => {
+    const sources = new Map()
+    sources.set('GLOBAL', 'GLOBAL')
+
+    projects.forEach((project) => {
+      sources.set(project.id, project.name)
+    })
+
+    logs.forEach((entry) => {
+      if (entry.projectId && !sources.has(entry.projectId)) {
+        sources.set(entry.projectId, projectNames[entry.projectId] || entry.projectId)
+      }
+    })
+
+    return Array.from(sources.entries())
+  }, [projects, logs, projectNames])
 
   const appendLog = useCallback((level, message, projectId) => {
     const entry = {
@@ -93,7 +300,7 @@ function App() {
   }, [])
 
   const applySnapshot = useCallback((snapshot) => {
-    if (!snapshot) {
+    if (!snapshot || typeof snapshot !== 'object') {
       return
     }
 
@@ -101,8 +308,13 @@ function App() {
       setProjects(snapshot.projects)
     }
 
+    if (Array.isArray(snapshot.scenarios)) {
+      setScenarios(snapshot.scenarios)
+      setSelectedScenarioId((previous) => previous || snapshot.scenarios[0]?.id || '')
+    }
+
     if (Array.isArray(snapshot.statuses)) {
-      setStatuses(toStatusMap(snapshot.statuses))
+      setStatusById(toStatusMap(snapshot.statuses))
     }
 
     if (typeof snapshot.baseDir === 'string' && snapshot.baseDir.length > 0) {
@@ -112,24 +324,25 @@ function App() {
 
   const callApi = useCallback(async (methodName, payload) => {
     if (!window.launcherApi || typeof window.launcherApi[methodName] !== 'function') {
-      throw new Error(
-        'API Electron indisponible. Démarrez l\'application avec npm run dev ou npm start.',
-      )
+      throw new Error('Electron API is unavailable. Start with npm run dev or npm start.')
     }
 
     const response = await window.launcherApi[methodName](payload)
 
     if (!response?.ok) {
-      throw new Error(response?.error || 'Une erreur inconnue est survenue.')
+      throw new Error(response?.error || 'Unknown error')
     }
 
     return response.data
   }, [])
 
-  const refreshState = useCallback(async (candidateBaseDir) => {
-    const snapshot = await callApi('getState', candidateBaseDir)
-    applySnapshot(snapshot)
-  }, [applySnapshot, callApi])
+  const refreshState = useCallback(
+    async (candidateBaseDir) => {
+      const snapshot = await callApi('getState', candidateBaseDir)
+      applySnapshot(snapshot)
+    },
+    [applySnapshot, callApi],
+  )
 
   const updateLaunchConfig = useCallback((projectId, field, value) => {
     setLaunchConfig((previous) => ({
@@ -141,31 +354,46 @@ function App() {
     }))
   }, [])
 
-  const runGlobalAction = async (label, methodName) => {
+  const runGlobalAction = async ({ label, methodName, includeLaunchConfig = false }) => {
     if (globalBusy.length > 0) {
       return
     }
 
     const currentBaseDir = baseDir.trim()
     setGlobalBusy(label)
-    appendLog('info', `${label} en cours...`)
+    appendLog('info', `${label} in progress...`)
 
     try {
-      const payload =
-        methodName === 'launchAll'
-          ? {
-              baseDir: currentBaseDir,
-              launchConfig,
-            }
-          : currentBaseDir
+      let payload
+
+      if (methodName === 'stopAll') {
+        payload = undefined
+      } else if (includeLaunchConfig) {
+        payload = { baseDir: currentBaseDir, launchConfig }
+      } else {
+        payload = currentBaseDir
+      }
 
       const result = await callApi(methodName, payload)
 
       if (Array.isArray(result?.statuses)) {
-        setStatuses(toStatusMap(result.statuses))
+        setStatusById(toStatusMap(result.statuses))
       }
 
-      appendLog('success', `${label} terminé.`)
+      if (methodName === 'runDiagnostics') {
+        setDiagnostics(result)
+      }
+
+      if (methodName === 'runAutotest') {
+        setAutotest(result)
+        setDiagnostics(result)
+      }
+
+      if (methodName === 'stopAll' && Array.isArray(result?.stopOrder) && result.stopOrder.length > 0) {
+        appendLog('info', `Stop order: ${result.stopOrder.join(' -> ')}`)
+      }
+
+      appendLog('success', `${label} completed.`)
       await refreshState(result?.baseDir || currentBaseDir)
     } catch (error) {
       appendLog('error', error.message)
@@ -193,10 +421,14 @@ function App() {
       const result = await callApi(methodName, payload)
 
       if (Array.isArray(result?.statuses)) {
-        setStatuses(toStatusMap(result.statuses))
+        setStatusById(toStatusMap(result.statuses))
       }
 
-      appendLog('success', `${label} terminé.`, projectId)
+      if (result?.diagnostics) {
+        setDiagnostics(summarizeSingleProjectDiagnostics(result.diagnostics))
+      }
+
+      appendLog('success', `${label} completed.`, projectId)
       await refreshState(currentBaseDir)
     } catch (error) {
       appendLog('error', error.message, projectId)
@@ -209,14 +441,154 @@ function App() {
     }
   }
 
+  const applySelectedProfile = useCallback(() => {
+    const profile = allProfiles.find((item) => item.id === selectedProfileId)
+
+    if (!profile) {
+      return
+    }
+
+    setLaunchConfig(mergeWithDefaults(profile.config))
+    appendLog('info', `Profile applied: ${profile.name}`)
+  }, [allProfiles, appendLog, selectedProfileId])
+
+  const saveCurrentProfile = useCallback(() => {
+    const name = newProfileName.trim()
+
+    if (name.length === 0) {
+      appendLog('warning', 'Provide a profile name before saving.')
+      return
+    }
+
+    const profileId = `custom-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
+
+    setSavedProfiles((previous) => {
+      const next = [...previous]
+      const existingIndex = next.findIndex((profile) => profile.id === profileId)
+
+      const profile = {
+        id: profileId,
+        name,
+        config: mergeWithDefaults(launchConfig),
+        readonly: false,
+      }
+
+      if (existingIndex >= 0) {
+        next[existingIndex] = profile
+      } else {
+        next.push(profile)
+      }
+
+      return next
+    })
+
+    setSelectedProfileId(profileId)
+    setNewProfileName('')
+    appendLog('success', `Profile saved: ${name}`)
+  }, [appendLog, launchConfig, newProfileName])
+
+  const deleteSelectedProfile = useCallback(() => {
+    const profile = savedProfiles.find((item) => item.id === selectedProfileId)
+
+    if (!profile) {
+      appendLog('warning', 'Select a custom profile to delete.')
+      return
+    }
+
+    setSavedProfiles((previous) => previous.filter((item) => item.id !== selectedProfileId))
+    setSelectedProfileId(BUILTIN_PROFILES[0].id)
+    appendLog('info', `Profile deleted: ${profile.name}`)
+  }, [appendLog, savedProfiles, selectedProfileId])
+
+  const runScenario = useCallback(async () => {
+    if (!selectedScenarioId || scenarioBusy || globalBusy) {
+      return
+    }
+
+    const currentBaseDir = baseDir.trim()
+    setScenarioBusy(true)
+    appendLog('info', `Scenario running: ${selectedScenario?.name || selectedScenarioId}`)
+
+    try {
+      const result = await callApi('runScenario', {
+        baseDir: currentBaseDir,
+        scenarioId: selectedScenarioId,
+        launchConfig,
+      })
+
+      if (Array.isArray(result?.statuses)) {
+        setStatusById(toStatusMap(result.statuses))
+      }
+
+      appendLog('success', `Scenario completed: ${selectedScenario?.name || selectedScenarioId}`)
+      await refreshState(result?.baseDir || currentBaseDir)
+    } catch (error) {
+      appendLog('error', error.message)
+    } finally {
+      setScenarioBusy(false)
+    }
+  }, [
+    appendLog,
+    baseDir,
+    callApi,
+    globalBusy,
+    launchConfig,
+    refreshState,
+    scenarioBusy,
+    selectedScenario,
+    selectedScenarioId,
+  ])
+
+  const exportFilteredLogs = useCallback(
+    async (entries) => {
+      if (logExportBusy) {
+        return
+      }
+
+      const currentBaseDir = baseDir.trim()
+      setLogExportBusy(true)
+
+      try {
+        const result = await callApi('exportLogs', {
+          baseDir: currentBaseDir,
+          logs: entries,
+        })
+
+        appendLog('success', `Logs exported to ${result.path}`)
+      } catch (error) {
+        appendLog('error', error.message)
+      } finally {
+        setLogExportBusy(false)
+      }
+    },
+    [appendLog, baseDir, callApi, logExportBusy],
+  )
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_LAUNCH_CONFIG, JSON.stringify(launchConfig))
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [launchConfig])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_PROFILES, JSON.stringify(savedProfiles))
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [savedProfiles])
+
   useEffect(() => {
     if (!window.launcherApi) {
-      appendLog('error', 'Electron n\'est pas détecté. Lancez le projet via npm run dev.')
+      appendLog('error', 'Electron is not available. Run via npm run dev.')
       setIsLoading(false)
       return () => {}
     }
 
     let mounted = true
+
     const unsubscribeLog = window.launcherApi.onLog((entry) => {
       if (!mounted) {
         return
@@ -230,7 +602,7 @@ function App() {
         return
       }
 
-      setStatuses(toStatusMap(payload.statuses))
+      setStatusById(toStatusMap(payload.statuses))
     })
 
     const bootstrap = async () => {
@@ -257,30 +629,71 @@ function App() {
   }, [appendLog, refreshState])
 
   const latestLogs = useMemo(() => logs.slice().reverse(), [logs])
+
+  const filteredLogs = useMemo(() => {
+    const query = logQuery.trim().toLowerCase()
+
+    return latestLogs.filter((entry) => {
+      const normalized = normalizeLevel(entry.level)
+      const sourceId = entry.projectId || 'GLOBAL'
+      const sourceName = entry.projectId ? projectNames[entry.projectId] || entry.projectId : 'GLOBAL'
+
+      if (logLevelFilter !== 'all' && normalized !== logLevelFilter) {
+        return false
+      }
+
+      if (logSourceFilter !== 'all' && sourceId !== logSourceFilter) {
+        return false
+      }
+
+      if (!query) {
+        return true
+      }
+
+      const haystack = `${entry.message || ''} ${sourceName} ${sourceId}`.toLowerCase()
+      return haystack.includes(query)
+    })
+  }, [latestLogs, logLevelFilter, logQuery, logSourceFilter, projectNames])
+
   const controlsDisabled = isLoading || globalBusy.length > 0
   const electronReady = Boolean(window.launcherApi)
   const modeEditorDisabled = !electronReady || controlsDisabled
   const pfdConfig = launchConfig['primary-flight-display'] || DEFAULT_LAUNCH_CONFIG['primary-flight-display']
   const navConfig = launchConfig['navigation-display'] || DEFAULT_LAUNCH_CONFIG['navigation-display']
 
+  const diagnosticsBannerTone = useMemo(() => {
+    if (!diagnostics) {
+      return 'idle'
+    }
+
+    if (diagnostics.summary?.projectFail > 0) {
+      return 'fail'
+    }
+
+    if (diagnostics.summary?.projectWarn > 0) {
+      return 'warn'
+    }
+
+    return 'pass'
+  }, [diagnostics])
+
   return (
     <div className="app-shell">
       <header className="hero-panel fade-in">
         <div>
           <p className="project-badge">GEII ESA 2026</p>
-          <h1>Launcher Simulateur d&apos;Avion</h1>
+          <h1>Launcher Simulateur d Avion</h1>
           <p className="subtitle">
-            Créez le dossier de travail, mettez les dépôts à jour, installez les dépendances
-            et lancez tous les modules du simulateur depuis une seule interface.
+            Single control panel for pre-checks, launches, scenarios, diagnostics, and runtime logs.
           </p>
         </div>
         <div className={`status-chip ${globalBusy ? 'busy' : 'idle'}`}>
-          {globalBusy || (isLoading ? 'Initialisation...' : 'Prêt')}
+          {globalBusy || (isLoading ? 'Initializing...' : 'Ready')}
         </div>
       </header>
 
       <section className="control-panel fade-in delay-1">
-        <label htmlFor="base-dir">Dossier racine du simulateur</label>
+        <label htmlFor="base-dir">Simulator root folder</label>
         <div className="path-row">
           <input
             id="base-dir"
@@ -296,7 +709,7 @@ function App() {
             disabled={!electronReady || controlsDisabled}
             onClick={() => refreshState(baseDir)}
           >
-            Actualiser
+            Refresh
           </button>
         </div>
 
@@ -304,58 +717,168 @@ function App() {
           <button
             type="button"
             disabled={!electronReady || controlsDisabled}
-            onClick={() => runGlobalAction('Préparation complète', 'setupAll')}
+            onClick={() => runGlobalAction({ label: 'Setup all', methodName: 'setupAll' })}
           >
-            Préparer tout
+            Setup all
           </button>
           <button
             type="button"
             disabled={!electronReady || controlsDisabled}
-            onClick={() => runGlobalAction('Mise à jour des dépôts', 'syncAll')}
+            onClick={() => runGlobalAction({ label: 'Sync all', methodName: 'syncAll' })}
           >
-            Pull tous
+            Pull all
           </button>
           <button
             type="button"
             disabled={!electronReady || controlsDisabled}
-            onClick={() => runGlobalAction('Installation des dépendances', 'installAll')}
+            onClick={() => runGlobalAction({ label: 'Install all', methodName: 'installAll' })}
           >
-            Installer tout
+            Install all
           </button>
           <button
             type="button"
             disabled={!electronReady || controlsDisabled}
-            onClick={() => runGlobalAction('Lancement de tous les projets', 'launchAll')}
+            onClick={() =>
+              runGlobalAction({
+                label: 'Launch all',
+                methodName: 'launchAll',
+                includeLaunchConfig: true,
+              })
+            }
           >
-            Lancer tous
+            Launch all
           </button>
           <button
             className="danger"
             type="button"
             disabled={!electronReady || isLoading}
-            onClick={() => runGlobalAction('Arrêt global', 'stopAll')}
+            onClick={() => runGlobalAction({ label: 'Stop all', methodName: 'stopAll' })}
           >
-            Arrêter tous
+            Stop all
           </button>
         </div>
       </section>
 
+      <section className={`diagnostics-banner fade-in delay-2 ${diagnosticsBannerTone}`}>
+        <div>
+          <h2>Diagnostics and autotest</h2>
+          {diagnostics ? (
+            <p>
+              Project pass: {diagnostics.summary?.projectPass || 0} | warnings:{' '}
+              {diagnostics.summary?.projectWarn || 0} | fails: {diagnostics.summary?.projectFail || 0}
+            </p>
+          ) : (
+            <p>No diagnostics report yet.</p>
+          )}
+          {autotest ? <p>Autotest verdict: {autotest.verdict || 'unknown'}</p> : null}
+        </div>
+        <div className="diag-actions">
+          <button
+            type="button"
+            disabled={!electronReady || controlsDisabled}
+            onClick={() =>
+              runGlobalAction({
+                label: 'Run diagnostics',
+                methodName: 'runDiagnostics',
+                includeLaunchConfig: true,
+              })
+            }
+          >
+            Run diagnostics
+          </button>
+          <button
+            type="button"
+            disabled={!electronReady || controlsDisabled}
+            onClick={() =>
+              runGlobalAction({
+                label: 'Run autotest',
+                methodName: 'runAutotest',
+                includeLaunchConfig: true,
+              })
+            }
+          >
+            Run autotest
+          </button>
+        </div>
+      </section>
+
+      {diagnostics?.reports?.length ? (
+        <section className="diag-report-panel fade-in delay-2">
+          <div className="panel-head compact">
+            <h2>Pre-check reports</h2>
+            <span>{diagnostics.reports.length} module(s)</span>
+          </div>
+          <div className="diag-report-grid">
+            {diagnostics.reports.map((report) => {
+              const firstFail = report.checks?.find((check) => check.status === 'fail')
+              const firstWarn = report.checks?.find((check) => check.status === 'warn')
+              const note = firstFail || firstWarn
+
+              return (
+                <article key={report.projectId} className={`diag-card ${report.status || 'pass'}`}>
+                  <h3>{report.projectName || report.projectId}</h3>
+                  <p>
+                    pass {report.summary?.pass || 0} | warn {report.summary?.warn || 0} | fail{' '}
+                    {report.summary?.fail || 0}
+                  </p>
+                  <p>{note ? `${note.label}: ${note.details}` : 'No blocking issue detected.'}</p>
+                </article>
+              )
+            })}
+          </div>
+        </section>
+      ) : null}
+
       <section className="modes-panel fade-in delay-2">
         <div className="panel-head">
-          <h2>Page des modes</h2>
+          <h2>Modes and profiles</h2>
           <button
             type="button"
             className="ghost"
             onClick={() => setShowModePage((previous) => !previous)}
           >
-            {showModePage ? 'Masquer les modes' : 'Ouvrir les modes'}
+            {showModePage ? 'Hide' : 'Show'}
           </button>
         </div>
 
-        <p className="modes-help">
-          Configurez les modes avant de lancer les projets. Le launcher injecte ces valeurs
-          automatiquement pour éviter les prompts interactifs dans le terminal.
-        </p>
+        <p className="modes-help">Profiles are saved locally and can be re-applied before launch.</p>
+
+        <div className="profile-toolbar">
+          <select
+            value={selectedProfileId}
+            onChange={(event) => setSelectedProfileId(event.target.value)}
+            disabled={modeEditorDisabled}
+          >
+            {allProfiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.name}
+              </option>
+            ))}
+          </select>
+          <button type="button" disabled={modeEditorDisabled} onClick={applySelectedProfile}>
+            Apply
+          </button>
+          <input
+            type="text"
+            value={newProfileName}
+            placeholder="Profile name"
+            onChange={(event) => setNewProfileName(event.target.value)}
+            disabled={modeEditorDisabled}
+          />
+          <button type="button" disabled={modeEditorDisabled} onClick={saveCurrentProfile}>
+            Save current
+          </button>
+          <button
+            type="button"
+            className="danger"
+            disabled={
+              modeEditorDisabled || BUILTIN_PROFILES.some((profile) => profile.id === selectedProfileId)
+            }
+            onClick={deleteSelectedProfile}
+          >
+            Delete profile
+          </button>
+        </div>
 
         {showModePage ? (
           <div className="mode-grid">
@@ -380,7 +903,7 @@ function App() {
 
               {pfdConfig.mode === '1' ? (
                 <div className="mode-row">
-                  <label htmlFor="pfd-joystick">Nom joystick</label>
+                  <label htmlFor="pfd-joystick">Joystick name</label>
                   <input
                     id="pfd-joystick"
                     type="text"
@@ -394,40 +917,38 @@ function App() {
               ) : null}
 
               {pfdConfig.mode === '2' ? (
-                <>
-                  <div className="mode-row two-cols">
-                    <div>
-                      <label htmlFor="pfd-xplane-ip">IP X-Plane</label>
-                      <input
-                        id="pfd-xplane-ip"
-                        type="text"
-                        value={pfdConfig.xplaneIp}
-                        disabled={modeEditorDisabled}
-                        onChange={(event) => {
-                          updateLaunchConfig('primary-flight-display', 'xplaneIp', event.target.value)
-                        }}
-                      />
-                    </div>
-                    <div>
-                      <label htmlFor="pfd-xplane-port">Port UDP</label>
-                      <input
-                        id="pfd-xplane-port"
-                        type="text"
-                        value={pfdConfig.xplanePort}
-                        disabled={modeEditorDisabled}
-                        onChange={(event) => {
-                          updateLaunchConfig('primary-flight-display', 'xplanePort', event.target.value)
-                        }}
-                      />
-                    </div>
+                <div className="mode-row two-cols">
+                  <div>
+                    <label htmlFor="pfd-xplane-ip">X-Plane IP</label>
+                    <input
+                      id="pfd-xplane-ip"
+                      type="text"
+                      value={pfdConfig.xplaneIp}
+                      disabled={modeEditorDisabled}
+                      onChange={(event) => {
+                        updateLaunchConfig('primary-flight-display', 'xplaneIp', event.target.value)
+                      }}
+                    />
                   </div>
-                </>
+                  <div>
+                    <label htmlFor="pfd-xplane-port">UDP port</label>
+                    <input
+                      id="pfd-xplane-port"
+                      type="text"
+                      value={pfdConfig.xplanePort}
+                      disabled={modeEditorDisabled}
+                      onChange={(event) => {
+                        updateLaunchConfig('primary-flight-display', 'xplanePort', event.target.value)
+                      }}
+                    />
+                  </div>
+                </div>
               ) : null}
 
               {pfdConfig.mode === '3' ? (
                 <div className="mode-row two-cols">
                   <div>
-                    <label htmlFor="pfd-msp-port">Port MSP</label>
+                    <label htmlFor="pfd-msp-port">MSP port</label>
                     <input
                       id="pfd-msp-port"
                       type="text"
@@ -468,14 +989,14 @@ function App() {
                       updateLaunchConfig('navigation-display', 'mode', event.target.value)
                     }}
                   >
-                    <option value="1">Mode 1 - Manuel</option>
+                    <option value="1">Mode 1 - Manual</option>
                     <option value="2">Mode 2 - X-Plane UDP</option>
                     <option value="3">Mode 3 - MSP GPS</option>
                   </select>
                 </div>
 
                 <div>
-                  <label htmlFor="nav-layout">Affichage</label>
+                  <label htmlFor="nav-layout">Layout</label>
                   <select
                     id="nav-layout"
                     value={navConfig.layout}
@@ -484,8 +1005,8 @@ function App() {
                       updateLaunchConfig('navigation-display', 'layout', event.target.value)
                     }}
                   >
-                    <option value="1">Complet (panneaux + carte)</option>
-                    <option value="2">Carte centrale uniquement</option>
+                    <option value="1">Full</option>
+                    <option value="2">Center map</option>
                   </select>
                 </div>
               </div>
@@ -494,7 +1015,7 @@ function App() {
                 <>
                   <div className="mode-row two-cols">
                     <div>
-                      <label htmlFor="nav-xplane-ip">IP X-Plane</label>
+                      <label htmlFor="nav-xplane-ip">X-Plane IP</label>
                       <input
                         id="nav-xplane-ip"
                         type="text"
@@ -506,7 +1027,7 @@ function App() {
                       />
                     </div>
                     <div>
-                      <label htmlFor="nav-xplane-port">Port distant</label>
+                      <label htmlFor="nav-xplane-port">Remote port</label>
                       <input
                         id="nav-xplane-port"
                         type="text"
@@ -519,7 +1040,7 @@ function App() {
                     </div>
                   </div>
                   <div className="mode-row">
-                    <label htmlFor="nav-xplane-local-port">Port local d&apos;écoute</label>
+                    <label htmlFor="nav-xplane-local-port">Local listen port</label>
                     <input
                       id="nav-xplane-local-port"
                       type="text"
@@ -536,7 +1057,7 @@ function App() {
               {navConfig.mode === '3' ? (
                 <div className="mode-row two-cols">
                   <div>
-                    <label htmlFor="nav-msp-port">Port MSP</label>
+                    <label htmlFor="nav-msp-port">MSP port</label>
                     <input
                       id="nav-msp-port"
                       type="text"
@@ -566,34 +1087,90 @@ function App() {
         ) : null}
       </section>
 
+      <section className="scenario-panel fade-in delay-3">
+        <div className="panel-head">
+          <h2>Launch scenarios</h2>
+          <span>{scenarios.length} scenario(s)</span>
+        </div>
+
+        <div className="scenario-toolbar">
+          <select
+            value={selectedScenarioId}
+            onChange={(event) => setSelectedScenarioId(event.target.value)}
+            disabled={!electronReady || controlsDisabled || scenarios.length === 0}
+          >
+            {scenarios.map((scenario) => (
+              <option key={scenario.id} value={scenario.id}>
+                {scenario.name}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={
+              !electronReady ||
+              controlsDisabled ||
+              scenarioBusy ||
+              scenarios.length === 0 ||
+              !selectedScenarioId
+            }
+            onClick={runScenario}
+          >
+            {scenarioBusy ? 'Scenario running...' : 'Run scenario'}
+          </button>
+        </div>
+
+        {selectedScenario ? (
+          <article className="scenario-card">
+            <h3>{selectedScenario.name}</h3>
+            <p>{selectedScenario.description || 'No description.'}</p>
+            <p>
+              Steps:{' '}
+              {(selectedScenario.steps || []).map((step) => step.action).join(' -> ') || 'No steps'}
+            </p>
+          </article>
+        ) : (
+          <p className="placeholder">No scenario loaded.</p>
+        )}
+      </section>
+
       <main className="dashboard">
         <section className="projects-panel fade-in delay-3">
           <div className="panel-head">
-            <h2>Modules du simulateur</h2>
-            <span>{projects.length} projets</span>
+            <h2>Simulator modules</h2>
+            <span>{projects.length} project(s)</span>
           </div>
 
           {!electronReady ? (
-            <p className="placeholder">
-              Mode navigateur détecté. Les actions système nécessitent Electron.
-            </p>
+            <p className="placeholder">Browser mode detected. System actions require Electron.</p>
           ) : (
             <div className="project-grid">
               {projects.map((project) => {
-                const running = Boolean(statuses[project.id])
+                const status = statusById[project.id] || {
+                  state: 'stopped',
+                  running: false,
+                  message: 'Waiting',
+                  attempt: 0,
+                }
+
+                const running = isProjectRunning(status)
                 const currentBusy = projectBusy[project.id]
+                const meta = getStatusMeta(status.state)
 
                 return (
                   <article key={project.id} className="project-card">
                     <div className="project-title-row">
                       <h3>{project.name}</h3>
-                      <span className={`state ${running ? 'running' : 'stopped'}`}>
-                        {running ? 'En cours' : 'À l\'arrêt'}
-                      </span>
+                      <span className={`state ${meta.tone}`}>{meta.label}</span>
                     </div>
 
                     <p className="project-meta">{project.repo}</p>
                     <p className="project-path">{project.path}</p>
+                    <p className="project-status-message">{status.message || 'No message'}</p>
+
+                    {status.attempt > 0 ? (
+                      <p className="task-state">Auto-restart attempt: {status.attempt}</p>
+                    ) : null}
 
                     <div className="card-actions">
                       <button
@@ -606,22 +1183,29 @@ function App() {
                       <button
                         type="button"
                         disabled={controlsDisabled || Boolean(currentBusy)}
-                        onClick={() => runProjectAction(project.id, 'Installation', 'installProject')}
+                        onClick={() => runProjectAction(project.id, 'Install', 'installProject')}
                       >
-                        Installer
+                        Install
                       </button>
                       <button
                         type="button"
-                        disabled={controlsDisabled || running || Boolean(currentBusy)}
-                        onClick={() => runProjectAction(project.id, 'Lancement', 'launchProject')}
+                        disabled={
+                          controlsDisabled ||
+                          running ||
+                          Boolean(currentBusy) ||
+                          status.state === 'checking' ||
+                          status.state === 'launching' ||
+                          status.state === 'stopping'
+                        }
+                        onClick={() => runProjectAction(project.id, 'Launch', 'launchProject')}
                       >
-                        Lancer
+                        Launch
                       </button>
                       <button
                         className="danger"
                         type="button"
                         disabled={isLoading || !running || Boolean(currentBusy)}
-                        onClick={() => runProjectAction(project.id, 'Arrêt', 'stopProject')}
+                        onClick={() => runProjectAction(project.id, 'Stop', 'stopProject')}
                       >
                         Stop
                       </button>
@@ -637,17 +1221,50 @@ function App() {
 
         <aside className="logs-panel fade-in delay-4">
           <div className="panel-head">
-            <h2>Journal d&apos;exécution</h2>
-            <button type="button" className="ghost" onClick={() => setLogs([])}>
-              Effacer
-            </button>
+            <h2>Execution logs</h2>
+            <div className="inline-actions">
+              <button type="button" className="ghost" onClick={() => setLogs([])}>
+                Clear
+              </button>
+              <button
+                type="button"
+                disabled={filteredLogs.length === 0 || logExportBusy}
+                onClick={() => exportFilteredLogs(filteredLogs)}
+              >
+                {logExportBusy ? 'Export...' : 'Export'}
+              </button>
+            </div>
           </div>
 
-          {latestLogs.length === 0 ? (
-            <p className="placeholder">Aucun événement pour le moment.</p>
+          <div className="log-toolbar">
+            <input
+              type="text"
+              placeholder="Search text"
+              value={logQuery}
+              onChange={(event) => setLogQuery(event.target.value)}
+            />
+            <select value={logLevelFilter} onChange={(event) => setLogLevelFilter(event.target.value)}>
+              <option value="all">All levels</option>
+              <option value="info">Info</option>
+              <option value="warning">Warning</option>
+              <option value="error">Error</option>
+              <option value="success">Success</option>
+            </select>
+            <select value={logSourceFilter} onChange={(event) => setLogSourceFilter(event.target.value)}>
+              <option value="all">All sources</option>
+              {logSources.map(([sourceId, label]) => (
+                <option key={sourceId} value={sourceId}>
+                  {label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {filteredLogs.length === 0 ? (
+            <p className="placeholder">No event matching the filters.</p>
           ) : (
             <ul className="log-list">
-              {latestLogs.map((entry, index) => {
+              {filteredLogs.map((entry, index) => {
                 const level = normalizeLevel(entry.level)
 
                 return (

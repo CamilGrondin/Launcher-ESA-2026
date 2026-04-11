@@ -1,0 +1,84 @@
+{
+  "version": "1.0.0",
+  "schema": "esa-launcher.scenarios.v1",
+  "scenarios": [
+    {
+      "id": "xplane-demo",
+      "name": "X-Plane demo",
+      "description": "Start all modules in X-Plane mode for classroom demonstrations.",
+      "runDiagnosticsFirst": true,
+      "syncBeforeLaunch": false,
+      "installBeforeLaunch": false,
+      "launchConfig": {
+        "primary-flight-display": {
+          "mode": "2",
+          "xplaneIp": "127.0.0.1",
+          "xplanePort": "49000"
+        },
+        "navigation-display": {
+          "mode": "2",
+          "layout": "1",
+          "xplaneIp": "127.0.0.1",
+          "xplanePort": "49000",
+          "localPort": "49005"
+        }
+      },
+      "steps": [
+        { "action": "start", "projectId": "navigation-display" },
+        { "action": "delay", "delayMs": 1200 },
+        { "action": "start", "projectId": "primary-flight-display" },
+        { "action": "delay", "delayMs": 800 },
+        { "action": "start", "projectId": "warning-panel" }
+      ]
+    },
+    {
+      "id": "msp-bench",
+      "name": "MSP bench",
+      "description": "Use MSP serial data for both displays during bench tests.",
+      "runDiagnosticsFirst": true,
+      "syncBeforeLaunch": false,
+      "installBeforeLaunch": false,
+      "launchConfig": {
+        "primary-flight-display": {
+          "mode": "3",
+          "mspPort": "/dev/tty.usbserial",
+          "mspBaud": "115200"
+        },
+        "navigation-display": {
+          "mode": "3",
+          "layout": "2",
+          "mspPort": "/dev/tty.usbserial",
+          "mspBaud": "115200"
+        }
+      },
+      "steps": [
+        { "action": "start", "projectId": "primary-flight-display" },
+        { "action": "delay", "delayMs": 1200 },
+        { "action": "start", "projectId": "navigation-display" }
+      ]
+    },
+    {
+      "id": "quick-check",
+      "name": "Quick check",
+      "description": "Fast smoke scenario for launcher validation.",
+      "runDiagnosticsFirst": true,
+      "syncBeforeLaunch": false,
+      "installBeforeLaunch": false,
+      "launchConfig": {
+        "primary-flight-display": {
+          "mode": "1",
+          "joystickName": "X52"
+        },
+        "navigation-display": {
+          "mode": "1",
+          "layout": "2"
+        }
+      },
+      "steps": [
+        { "action": "start", "projectId": "navigation-display" },
+        { "action": "delay", "delayMs": 800 },
+        { "action": "start", "projectId": "warning-panel" }
+      ]
+    }
+  ]
+}

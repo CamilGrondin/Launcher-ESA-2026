@@ -1,5 +1,5 @@
 .app-shell {
-  width: min(1400px, 100%);
+  width: min(1440px, 100%);
   margin: 0 auto;
   padding: 26px;
   display: grid;
@@ -8,7 +8,10 @@
 
 .hero-panel,
 .control-panel,
+.diagnostics-banner,
+.diag-report-panel,
 .modes-panel,
+.scenario-panel,
 .projects-panel,
 .logs-panel {
   border: 1px solid var(--panel-border);
@@ -77,12 +80,6 @@ h1 {
   padding: 20px;
   display: grid;
   gap: 14px;
-}
-
-.modes-panel {
-  padding: 18px;
-  display: grid;
-  gap: 12px;
 }
 
 label {
@@ -159,51 +156,95 @@ button.danger {
   gap: 10px;
 }
 
-.modes-help {
+.diagnostics-banner {
+  padding: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.diagnostics-banner h2 {
   margin: 0;
+  font-size: 1.1rem;
+  color: var(--text-strong);
+}
+
+.diagnostics-banner p {
+  margin: 6px 0 0;
   color: var(--text-soft);
 }
 
-.mode-grid {
+.diagnostics-banner.idle {
+  border-color: rgba(130, 170, 206, 0.35);
+}
+
+.diagnostics-banner.pass {
+  border-color: rgba(64, 201, 142, 0.55);
+}
+
+.diagnostics-banner.warn {
+  border-color: rgba(248, 190, 80, 0.7);
+}
+
+.diagnostics-banner.fail {
+  border-color: rgba(255, 102, 102, 0.75);
+}
+
+.diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.diag-report-panel {
+  padding: 16px;
   display: grid;
-  grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 
-.mode-card {
-  border-radius: 14px;
+.panel-head.compact {
+  margin-bottom: 0;
+}
+
+.diag-report-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.diag-card {
+  border-radius: 12px;
+  padding: 12px;
   border: 1px solid rgba(90, 133, 164, 0.35);
   background: linear-gradient(155deg, rgba(6, 20, 34, 0.92), rgba(5, 16, 27, 0.72));
-  padding: 14px;
-  display: grid;
-  gap: 12px;
 }
 
-.mode-row {
-  display: grid;
-  gap: 8px;
+.diag-card p {
+  margin: 6px 0 0;
+  color: var(--text-soft);
+  font-size: 0.86rem;
 }
 
-.mode-row.two-cols {
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+.diag-card.pass {
+  border-color: rgba(64, 201, 142, 0.4);
 }
 
-.mode-row > div {
-  display: grid;
-  gap: 8px;
+.diag-card.warn {
+  border-color: rgba(248, 190, 80, 0.55);
 }
 
-.dashboard {
-  display: grid;
-  gap: 20px;
-  grid-template-columns: 2fr 1fr;
-  align-items: start;
+.diag-card.fail {
+  border-color: rgba(255, 102, 102, 0.6);
 }
 
+.modes-panel,
+.scenario-panel,
 .projects-panel,
 .logs-panel {
   padding: 18px;
+  display: grid;
+  gap: 12px;
 }
 
 .panel-head {
@@ -224,12 +265,25 @@ button.danger {
   color: var(--text-soft);
 }
 
-.project-grid {
+.modes-help {
+  margin: 0;
+  color: var(--text-soft);
+}
+
+.profile-toolbar {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(265px, 1fr));
+  grid-template-columns: 1.4fr auto 1fr auto auto;
+  gap: 8px;
+}
+
+.mode-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 12px;
 }
 
+.mode-card,
+.scenario-card,
 .project-card {
   border-radius: 14px;
   border: 1px solid rgba(90, 133, 164, 0.35);
@@ -237,6 +291,44 @@ button.danger {
   padding: 14px;
   display: grid;
   gap: 10px;
+}
+
+.mode-row {
+  display: grid;
+  gap: 8px;
+}
+
+.mode-row.two-cols {
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.mode-row > div {
+  display: grid;
+  gap: 8px;
+}
+
+.scenario-toolbar {
+  display: flex;
+  gap: 8px;
+}
+
+.scenario-card p {
+  margin: 0;
+  color: var(--text-soft);
+}
+
+.dashboard {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: 2fr 1fr;
+  align-items: start;
+}
+
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(265px, 1fr));
+  gap: 12px;
 }
 
 .project-title-row {
@@ -260,20 +352,42 @@ h3 {
   border: 1px solid transparent;
 }
 
-.state.running {
-  background: rgba(18, 136, 84, 0.25);
-  border-color: rgba(84, 215, 142, 0.35);
-  color: #9ffec8;
-}
-
 .state.stopped {
   background: rgba(112, 132, 158, 0.16);
   border-color: rgba(130, 165, 198, 0.3);
   color: #bad7ec;
 }
 
+.state.ready {
+  background: rgba(43, 130, 98, 0.2);
+  border-color: rgba(84, 215, 142, 0.35);
+  color: #9ffec8;
+}
+
+.state.checking,
+.state.launching,
+.state.stopping {
+  background: rgba(143, 86, 18, 0.26);
+  border-color: rgba(255, 191, 89, 0.4);
+  color: #ffd597;
+}
+
+.state.active {
+  background: rgba(18, 136, 84, 0.25);
+  border-color: rgba(84, 215, 142, 0.35);
+  color: #9ffec8;
+}
+
+.state.timeout,
+.state.error {
+  background: rgba(90, 17, 17, 0.38);
+  border-color: rgba(255, 110, 110, 0.58);
+  color: #ffb0b0;
+}
+
 .project-meta,
-.project-path {
+.project-path,
+.project-status-message {
   margin: 0;
   font-size: 0.8rem;
   line-height: 1.4;
@@ -298,10 +412,21 @@ h3 {
 }
 
 .logs-panel {
-  max-height: 710px;
+  max-height: 780px;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+.inline-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.log-toolbar {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 1fr;
+  gap: 8px;
 }
 
 .log-list {
@@ -403,7 +528,7 @@ h3 {
   }
 }
 
-@media (max-width: 1120px) {
+@media (max-width: 1180px) {
   .mode-grid {
     grid-template-columns: 1fr;
   }
@@ -412,8 +537,16 @@ h3 {
     grid-template-columns: 1fr;
   }
 
+  .profile-toolbar {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .log-toolbar {
+    grid-template-columns: 1fr;
+  }
+
   .logs-panel {
-    max-height: 460px;
+    max-height: 520px;
   }
 
   .log-item {
@@ -421,7 +554,7 @@ h3 {
   }
 }
 
-@media (max-width: 740px) {
+@media (max-width: 760px) {
   .app-shell {
     padding: 14px;
   }
@@ -441,6 +574,14 @@ h3 {
   .global-actions {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .diag-actions,
+  .scenario-toolbar,
+  .inline-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .mode-row.two-cols {

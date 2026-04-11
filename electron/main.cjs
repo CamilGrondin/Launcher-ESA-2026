@@ -27,6 +27,7 @@ function makeStateSnapshot(baseDir) {
     defaultBaseDir: launcherService.getDefaultBaseDir(),
     baseDir: resolvedBaseDir,
     projects: launcherService.getProjects(resolvedBaseDir),
+    scenarios: launcherService.getScenarios(),
     statuses: launcherService.getRuntimeStatus(),
   }
 }
@@ -53,8 +54,10 @@ function registerIpcHandler(channel, task) {
 function registerIpcHandlers() {
   registerIpcHandler('launcher:get-state', async (baseDir) => makeStateSnapshot(baseDir))
 
+  registerIpcHandler('launcher:get-scenarios', async () => launcherService.getScenarios())
+
   registerIpcHandler('launcher:setup-all', async (baseDir) => {
-    const result = await launcherService.setupAll(baseDir, emitLog)
+    const result = await launcherService.setupAll(baseDir, emitLog, emitStatus)
     return {
       ...result,
       projects: launcherService.getProjects(result.baseDir),
@@ -63,7 +66,7 @@ function registerIpcHandlers() {
   })
 
   registerIpcHandler('launcher:sync-all', async (baseDir) => {
-    const result = await launcherService.syncAll(baseDir, emitLog)
+    const result = await launcherService.syncAll(baseDir, emitLog, emitStatus)
     return {
       ...result,
       projects: launcherService.getProjects(result.baseDir),
@@ -72,7 +75,7 @@ function registerIpcHandlers() {
   })
 
   registerIpcHandler('launcher:install-all', async (baseDir) => {
-    const result = await launcherService.installAll(baseDir, emitLog)
+    const result = await launcherService.installAll(baseDir, emitLog, emitStatus)
     return {
       ...result,
       projects: launcherService.getProjects(result.baseDir),
@@ -90,7 +93,12 @@ function registerIpcHandlers() {
   registerIpcHandler('launcher:stop-all', async () => launcherService.stopAll(emitLog, emitStatus))
 
   registerIpcHandler('launcher:sync-project', async (payload) => {
-    const result = await launcherService.syncProject(payload?.baseDir, payload?.projectId, emitLog)
+    const result = await launcherService.syncProject(
+      payload?.baseDir,
+      payload?.projectId,
+      emitLog,
+      emitStatus,
+    )
     return {
       ...result,
       statuses: launcherService.getRuntimeStatus(),
@@ -98,7 +106,12 @@ function registerIpcHandlers() {
   })
 
   registerIpcHandler('launcher:install-project', async (payload) => {
-    const result = await launcherService.installProject(payload?.baseDir, payload?.projectId, emitLog)
+    const result = await launcherService.installProject(
+      payload?.baseDir,
+      payload?.projectId,
+      emitLog,
+      emitStatus,
+    )
     return {
       ...result,
       statuses: launcherService.getRuntimeStatus(),
@@ -117,6 +130,42 @@ function registerIpcHandlers() {
 
   registerIpcHandler('launcher:stop-project', async (payload) => {
     return launcherService.stopProject(payload?.projectId, emitLog, emitStatus)
+  })
+
+  registerIpcHandler('launcher:run-diagnostics', async (payload) => {
+    const result = await launcherService.runDiagnostics(
+      payload?.baseDir,
+      payload?.launchConfig,
+      emitStatus,
+    )
+
+    return {
+      ...result,
+      statuses: launcherService.getRuntimeStatus(),
+    }
+  })
+
+  registerIpcHandler('launcher:run-autotest', async (payload) => {
+    const result = await launcherService.runAutotest(payload?.baseDir, payload?.launchConfig, emitStatus)
+
+    return {
+      ...result,
+      statuses: launcherService.getRuntimeStatus(),
+    }
+  })
+
+  registerIpcHandler('launcher:run-scenario', async (payload) => {
+    return launcherService.runScenario(
+      payload?.baseDir,
+      payload?.scenarioId,
+      payload?.launchConfig,
+      emitLog,
+      emitStatus,
+    )
+  })
+
+  registerIpcHandler('launcher:export-logs', async (payload) => {
+    return launcherService.exportLogs(payload?.baseDir, payload?.logs)
   })
 }
 

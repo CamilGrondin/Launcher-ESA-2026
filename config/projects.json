@@ -1,0 +1,104 @@
+{
+  "version": "1.0.0",
+  "schema": "esa-launcher.projects.v1",
+  "defaults": {
+    "pythonCommand": "python3.13",
+    "launchStableAfterMs": 7000,
+    "launchTimeoutMs": 20000,
+    "maxRestartAttempts": 1,
+    "restartDelayMs": 2500
+  },
+  "projects": [
+    {
+      "id": "navigation-display",
+      "name": "Navigation Display",
+      "directory": "Navigation-Display",
+      "repo": "https://github.com/CamilGrondin/Navigation-Display.git",
+      "pythonCommand": "python3.13",
+      "dependsOn": [],
+      "stopPriority": 30,
+      "startCommand": {
+        "label": "Run Navigation Display",
+        "command": "python3.13",
+        "args": ["Navigation Display.py"],
+        "persistent": true
+      },
+      "requiredImports": ["PyQt5", "serial"],
+      "extraInstallSteps": [
+        {
+          "label": "Install Navigation Display Python deps",
+          "command": "python3.13",
+          "args": [
+            "-m",
+            "pip",
+            "install",
+            "--user",
+            "--break-system-packages",
+            "PyQt5",
+            "PyQtWebEngine",
+            "pyserial"
+          ]
+        }
+      ],
+      "launchPolicy": {
+        "stableAfterMs": 7000,
+        "timeoutMs": 22000,
+        "maxRestartAttempts": 1,
+        "restartDelayMs": 2500
+      }
+    },
+    {
+      "id": "primary-flight-display",
+      "name": "Primary Flight Display",
+      "directory": "PrimaryFlightDisplay",
+      "repo": "https://github.com/CamilGrondin/PrimaryFlightDisplay.git",
+      "pythonCommand": "python3.13",
+      "dependsOn": ["navigation-display"],
+      "stopPriority": 40,
+      "startCommand": {
+        "label": "Run Primary Flight Display",
+        "command": "python3.13",
+        "args": ["main.py"],
+        "persistent": true
+      },
+      "requiredImports": ["numpy", "pygame", "serial"],
+      "extraInstallSteps": [
+        {
+          "label": "Install Primary Flight Display Python deps",
+          "command": "python3.13",
+          "args": [
+            "-m",
+            "pip",
+            "install",
+            "--user",
+            "--break-system-packages",
+            "numpy",
+            "pygame",
+            "pyserial"
+          ]
+        }
+      ],
+      "launchPolicy": {
+        "stableAfterMs": 7000,
+        "timeoutMs": 20000,
+        "maxRestartAttempts": 2,
+        "restartDelayMs": 2500
+      }
+    },
+    {
+      "id": "warning-panel",
+      "name": "Warning Panel",
+      "directory": "Warning-Panel",
+      "repo": "https://github.com/CamilGrondin/Warning-Panel.git",
+      "dependsOn": ["primary-flight-display"],
+      "stopPriority": 20,
+      "requiredFiles": ["preview-warning-panel.html"],
+      "startCommand": {
+        "label": "Open Warning Panel preview",
+        "command": "python3.13",
+        "args": ["-m", "webbrowser", "preview-warning-panel.html"],
+        "persistent": false
+      }
+    }
+  ]
+}
