@@ -68,6 +68,27 @@ npm run build
 npm start
 ```
 
+## Mise a jour release GitHub
+
+Commande unique pour publier ou mettre a jour les assets d'une release:
+
+```bash
+npm run release:github -- 0.0.2
+```
+
+Notes:
+
+- Utilise `gh` (GitHub CLI) et met a jour le tag `v0.0.2`.
+- Normalise les noms des artefacts en format hyphene (compatible auto-update).
+- Upload les binaires + `latest.yml`, `latest-mac.yml`, `latest-linux-arm64.yml` avec `--clobber`.
+- Supprime les doublons d'assets avec noms normalises en points si presents.
+
+Dry-run:
+
+```bash
+npm run release:github -- --dry-run 0.0.2
+```
+
 ## Structure du projet
 
 - electron/main.cjs: fenêtre Electron et handlers IPC

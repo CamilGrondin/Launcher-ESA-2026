@@ -15,7 +15,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "package:app": "npm run build && electron-builder --dir",
-    "make:app": "npm run build && electron-builder"
+    "make:app": "npm run build && electron-builder",
+    "release:github": "bash scripts/update-github-release.sh"
   },
   "dependencies": {
     "react": "^19.2.4",

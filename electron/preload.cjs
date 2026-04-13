@@ -30,6 +30,8 @@ contextBridge.exposeInMainWorld('launcherApi', {
   stopProject: (payload) => ipcRenderer.invoke('launcher:stop-project', payload),
   runDiagnostics: (payload) => ipcRenderer.invoke('launcher:run-diagnostics', payload),
   runAutotest: (payload) => ipcRenderer.invoke('launcher:run-autotest', payload),
+  installSdrPlusPlus: () => ipcRenderer.invoke('launcher:install-sdrpp'),
+  openBetaflight: () => ipcRenderer.invoke('launcher:open-betaflight'),
   runScenario: (payload) => ipcRenderer.invoke('launcher:run-scenario', payload),
   exportLogs: (payload) => ipcRenderer.invoke('launcher:export-logs', payload),
   onLog: (callback) => subscribe('launcher:log', callback),
