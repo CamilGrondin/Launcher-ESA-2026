@@ -2,7 +2,7 @@
   "name": "esa-launcher-2026",
   "description": "Electron launcher for GEII ESA 2026 simulator modules",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.0.1",
   "author": "GEII ESA Team",
   "type": "module",
   "main": "electron/main.cjs",
