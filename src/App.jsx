@@ -682,7 +682,7 @@ function App() {
       <header className="hero-panel fade-in">
         <div>
           <p className="project-badge">GEII ESA 2026</p>
-          <h1>Launcher Simulateur d Avion</h1>
+          <h1>Launcher Simulateur d'Avion</h1>
           <p className="subtitle">
             Single control panel for pre-checks, launches, scenarios, diagnostics, and runtime logs.
           </p>
@@ -717,9 +717,9 @@ function App() {
           <button
             type="button"
             disabled={!electronReady || controlsDisabled}
-            onClick={() => runGlobalAction({ label: 'Setup all', methodName: 'setupAll' })}
+            onClick={() => runGlobalAction({ label: 'Setup + install all', methodName: 'setupAll' })}
           >
-            Setup all
+            Setup + Install all
           </button>
           <button
             type="button"
@@ -727,13 +727,6 @@ function App() {
             onClick={() => runGlobalAction({ label: 'Sync all', methodName: 'syncAll' })}
           >
             Pull all
-          </button>
-          <button
-            type="button"
-            disabled={!electronReady || controlsDisabled}
-            onClick={() => runGlobalAction({ label: 'Install all', methodName: 'installAll' })}
-          >
-            Install all
           </button>
           <button
             type="button"

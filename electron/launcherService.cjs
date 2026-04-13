@@ -9,6 +9,7 @@ const SCENARIOS_CONFIG_PATH = path.join(__dirname, '..', 'config', 'scenarios.js
 
 const SCRIPT_PRIORITY = ['start', 'dev', 'launch', 'serve']
 const RUNNING_PROCESSES = new Map()
+const PENDING_RESTARTS = new Map()
 const PROJECT_STATES = new Map()
 
 const PROJECTS_CONFIG = readJsonConfig(PROJECTS_CONFIG_PATH, { defaults: {}, projects: [] })
@@ -20,11 +21,16 @@ const CONFIG_DEFAULTS = {
   launchTimeoutMs: 20000,
   maxRestartAttempts: 1,
   restartDelayMs: 2500,
+  keepAliveOnFinalCrash: true,
   ...PROJECTS_CONFIG.defaults,
 }
 
 const PROJECTS = Array.isArray(PROJECTS_CONFIG.projects) ? PROJECTS_CONFIG.projects : []
 const SCENARIOS = Array.isArray(SCENARIOS_CONFIG.scenarios) ? SCENARIOS_CONFIG.scenarios : []
+const TAR1090_REPO = 'https://github.com/wiedehopf/tar1090.git'
+const TAR1090_DIRECTORY = 'tar1090'
+const TAR1090_PROJECT_ID = 'tar1090'
+const TAR1090_PROJECT_NAME = 'tar1090'
 
 function readJsonConfig(filePath, fallback) {
   try {
@@ -55,6 +61,30 @@ function normalizeString(value, fallback) {
 function normalizeInteger(value, fallback) {
   const parsed = Number.parseInt(String(value), 10)
   return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function normalizeBoolean(value, fallback) {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value !== 0
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+
+    if (['true', '1', 'yes', 'on'].includes(normalized)) {
+      return true
+    }
+
+    if (['false', '0', 'no', 'off'].includes(normalized)) {
+      return false
+    }
+  }
+
+  return fallback
 }
 
 function normalizeMode(value, allowed, fallback) {
@@ -1146,6 +1176,19 @@ function clearRuntimeTimers(runtime) {
   }
 }
 
+function clearPendingRestart(projectId) {
+  const pending = PENDING_RESTARTS.get(projectId)
+
+  if (!pending) {
+    return false
+  }
+
+  clearTimeout(pending.timer)
+  PENDING_RESTARTS.delete(projectId)
+
+  return true
+}
+
 function resolveLaunchPolicy(project, startCommand) {
   const source = project.launchPolicy || {}
 
@@ -1154,12 +1197,72 @@ function resolveLaunchPolicy(project, startCommand) {
     timeoutMs: normalizeInteger(startCommand.timeoutMs, normalizeInteger(source.timeoutMs, CONFIG_DEFAULTS.launchTimeoutMs)),
     maxRestartAttempts: normalizeInteger(startCommand.maxRestartAttempts, normalizeInteger(source.maxRestartAttempts, CONFIG_DEFAULTS.maxRestartAttempts)),
     restartDelayMs: normalizeInteger(startCommand.restartDelayMs, normalizeInteger(source.restartDelayMs, CONFIG_DEFAULTS.restartDelayMs)),
+    keepAliveOnFinalCrash: normalizeBoolean(
+      startCommand.keepAliveOnFinalCrash,
+      normalizeBoolean(source.keepAliveOnFinalCrash, normalizeBoolean(CONFIG_DEFAULTS.keepAliveOnFinalCrash, true)),
+    ),
   }
 }
 
 function scheduleRestart(runtime, reason) {
-  if (runtime.attempt >= runtime.policy.maxRestartAttempts) {
-    return false
+  const exhausted = runtime.attempt >= runtime.policy.maxRestartAttempts
+
+  if (exhausted) {
+    if (!runtime.policy.keepAliveOnFinalCrash) {
+      return false
+    }
+
+    const nextAttempt = runtime.attempt + 1
+    const finalPolicy = {
+      ...runtime.policy,
+      maxRestartAttempts: nextAttempt,
+      keepAliveOnFinalCrash: false,
+    }
+
+    emitLog(runtime.logEmitter, {
+      level: 'warning',
+      projectId: runtime.project.id,
+      message: `Limite de redemarrage atteinte apres ${reason}. Dernier relancement puis auto-restart desactive.`,
+    })
+
+    setProjectState(
+      runtime.project.id,
+      {
+        state: 'launching',
+        running: true,
+        attempt: nextAttempt,
+        message: `Relancement final en attente #${nextAttempt} (auto-restart desactive ensuite)`,
+      },
+      runtime.statusEmitter,
+    )
+
+    clearPendingRestart(runtime.project.id)
+
+    const timer = setTimeout(() => {
+      const pending = PENDING_RESTARTS.get(runtime.project.id)
+      if (pending?.timer === timer) {
+        PENDING_RESTARTS.delete(runtime.project.id)
+      }
+
+      if (RUNNING_PROCESSES.has(runtime.project.id)) {
+        return
+      }
+
+      spawnManagedProcess({
+        project: runtime.project,
+        projectDir: runtime.projectDir,
+        startCommand: runtime.startCommand,
+        launchOptions: runtime.launchOptions,
+        policy: finalPolicy,
+        attempt: nextAttempt,
+        logEmitter: runtime.logEmitter,
+        statusEmitter: runtime.statusEmitter,
+      })
+    }, runtime.policy.restartDelayMs)
+
+    PENDING_RESTARTS.set(runtime.project.id, { timer })
+
+    return true
   }
 
   const nextAttempt = runtime.attempt + 1
@@ -1167,7 +1270,7 @@ function scheduleRestart(runtime, reason) {
   emitLog(runtime.logEmitter, {
     level: 'warning',
     projectId: runtime.project.id,
-    message: `Redémarrage automatique (${nextAttempt}/${runtime.policy.maxRestartAttempts}) après ${reason}`,
+    message: `Redemarrage automatique #${nextAttempt} apres ${reason}`,
   })
 
   setProjectState(
@@ -1176,12 +1279,19 @@ function scheduleRestart(runtime, reason) {
       state: 'launching',
       running: true,
       attempt: nextAttempt,
-      message: `Redémarrage en attente (${nextAttempt}/${runtime.policy.maxRestartAttempts + 1})`,
+      message: `Redemarrage en attente #${nextAttempt}`,
     },
     runtime.statusEmitter,
   )
 
-  setTimeout(() => {
+  clearPendingRestart(runtime.project.id)
+
+  const timer = setTimeout(() => {
+    const pending = PENDING_RESTARTS.get(runtime.project.id)
+    if (pending?.timer === timer) {
+      PENDING_RESTARTS.delete(runtime.project.id)
+    }
+
     if (RUNNING_PROCESSES.has(runtime.project.id)) {
       return
     }
@@ -1198,11 +1308,14 @@ function scheduleRestart(runtime, reason) {
     })
   }, runtime.policy.restartDelayMs)
 
+  PENDING_RESTARTS.set(runtime.project.id, { timer })
+
   return true
 }
 
 function spawnManagedProcess(context) {
   const { project, projectDir, startCommand, launchOptions, policy, attempt, logEmitter, statusEmitter } = context
+  clearPendingRestart(project.id)
   const commandPreview = [startCommand.command, ...startCommand.args].join(' ')
 
   const child = spawn(startCommand.command, startCommand.args, {
@@ -1229,7 +1342,9 @@ function spawnManagedProcess(context) {
       state: 'launching',
       running: true,
       attempt,
-      message: `Lancement (${attempt + 1}/${policy.maxRestartAttempts + 1})`,
+      message: policy.keepAliveOnFinalCrash
+        ? `Lancement #${attempt + 1} (maintien actif)`
+        : `Lancement (${attempt + 1}/${policy.maxRestartAttempts + 1})`,
     },
     statusEmitter,
   )
@@ -1541,8 +1656,33 @@ async function startProject(baseDir, projectId, logEmitter, statusEmitter, launc
 function stopProject(projectId, logEmitter, statusEmitter) {
   const project = getProjectById(projectId)
   const running = RUNNING_PROCESSES.get(projectId)
+  const cancelledPendingRestart = clearPendingRestart(projectId)
 
   if (!running) {
+    if (cancelledPendingRestart) {
+      setProjectState(
+        projectId,
+        {
+          state: 'stopped',
+          running: false,
+          message: `${project.name} arrete`,
+        },
+        statusEmitter,
+      )
+
+      emitLog(logEmitter, {
+        level: 'info',
+        projectId,
+        message: `Redemarrage automatique annule pour ${project.name}`,
+      })
+
+      return {
+        projectId,
+        stopped: true,
+        reason: 'restart-cancelled',
+      }
+    }
+
     return {
       projectId,
       stopped: false,
@@ -1683,6 +1823,80 @@ async function syncAll(baseDir, logEmitter, statusEmitter) {
   }
 }
 
+async function installTar1090(logEmitter) {
+  const tar1090Dir = path.join(os.homedir(), TAR1090_DIRECTORY)
+  const cloneParentDir = os.homedir()
+  const gitDir = path.join(tar1090Dir, '.git')
+
+  emitLog(logEmitter, {
+    level: 'info',
+    projectId: TAR1090_PROJECT_ID,
+    message: 'Installation de tar1090...',
+  })
+
+  if (await pathExists(gitDir)) {
+    await runCommand({
+      command: 'git',
+      args: ['-C', tar1090Dir, 'pull', '--ff-only'],
+      cwd: cloneParentDir,
+      projectId: TAR1090_PROJECT_ID,
+      projectName: TAR1090_PROJECT_NAME,
+      logEmitter,
+    })
+
+    emitLog(logEmitter, {
+      level: 'success',
+      projectId: TAR1090_PROJECT_ID,
+      message: 'tar1090 mis à jour.',
+    })
+
+    return {
+      projectId: TAR1090_PROJECT_ID,
+      action: 'pulled',
+      repo: TAR1090_REPO,
+      path: tar1090Dir,
+    }
+  }
+
+  if (await pathExists(tar1090Dir)) {
+    emitLog(logEmitter, {
+      level: 'warning',
+      projectId: TAR1090_PROJECT_ID,
+      message: `Le dossier ${TAR1090_DIRECTORY} existe déjà sans dépôt git. tar1090 non modifié.`,
+    })
+
+    return {
+      projectId: TAR1090_PROJECT_ID,
+      action: 'skipped',
+      repo: TAR1090_REPO,
+      path: tar1090Dir,
+      reason: 'existing-non-git',
+    }
+  }
+
+  await runCommand({
+    command: 'git',
+    args: ['clone', TAR1090_REPO, tar1090Dir],
+    cwd: cloneParentDir,
+    projectId: TAR1090_PROJECT_ID,
+    projectName: TAR1090_PROJECT_NAME,
+    logEmitter,
+  })
+
+  emitLog(logEmitter, {
+    level: 'success',
+    projectId: TAR1090_PROJECT_ID,
+    message: 'tar1090 installé.',
+  })
+
+  return {
+    projectId: TAR1090_PROJECT_ID,
+    action: 'cloned',
+    repo: TAR1090_REPO,
+    path: tar1090Dir,
+  }
+}
+
 async function installAll(baseDir, logEmitter, statusEmitter) {
   const resolvedBaseDir = normalizeBaseDir(baseDir)
   const results = []
@@ -1710,11 +1924,13 @@ async function setupAll(baseDir, logEmitter, statusEmitter) {
   const resolvedBaseDir = await ensureBaseDirectory(baseDir, logEmitter)
   const sync = await syncAll(resolvedBaseDir, logEmitter, statusEmitter)
   const install = await installAll(resolvedBaseDir, logEmitter, statusEmitter)
+  const tar1090 = await installTar1090(logEmitter)
 
   return {
     baseDir: resolvedBaseDir,
     sync,
     install,
+    tar1090,
   }
 }
 
@@ -1844,6 +2060,12 @@ async function runScenario(baseDir, scenarioId, launchConfig, logEmitter, status
 }
 
 function shutdown(logEmitter, statusEmitter) {
+  for (const pending of PENDING_RESTARTS.values()) {
+    clearTimeout(pending.timer)
+  }
+
+  PENDING_RESTARTS.clear()
+
   for (const [projectId, runtime] of RUNNING_PROCESSES.entries()) {
     runtime.stopping = true
 
